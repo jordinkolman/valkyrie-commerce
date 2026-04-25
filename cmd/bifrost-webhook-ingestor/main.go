@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -57,22 +58,26 @@ func main() {
     WriteTimeout:      15 * time.Second,
     IdleTimeout:       60 * time.Second,
   }
-
+  
+  // channel for receiving errors from server crash
+  serverErr := make(chan error, 1)
   go func() {
     log.Printf("Summoning Bifrost on port %s...\n", port)
-    if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-      log.Fatalf("Server crashed: %v", err)
+    if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+      serverErr <- err
     }
   }()
 
   // Channel to receive server terminate request
   quit := make(chan os.Signal, 1)
-
   signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-  <-quit
-  log.Println("Kill signal received. Shutting down gracefully...")
-
+  select {
+  case err := <- serverErr:
+    log.Printf("Server crashed: %v", err)
+  case <-quit:
+    log.Println("Kill signal received. Shutting down gracefully...")
+  }
   ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
   defer cancel()
 
