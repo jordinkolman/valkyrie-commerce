@@ -30,7 +30,7 @@ func main() {
   if redisURLStr == "" {
     log.Fatal("REDIS_URL environment variable missing")
   }
-  client, err := queue.NewRedisClient(os.Getenv("REDIS_URL"))
+  client, err := queue.NewRedisClient(os.Getenv(redisURLStr))
 
   if err != nil {
     log.Fatal("Could not connect to Redis: ", err.Error())
@@ -38,7 +38,7 @@ func main() {
   srv := &Server{
     redisClient: client,
   }
-  defer client.Close()
+  defer func() { _ = client.Close() }()
   log.Println("Connected to Redis!")
 
   mux := http.NewServeMux()
