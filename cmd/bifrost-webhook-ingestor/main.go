@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/jordinkolman/valkyrie-commerce/internal/queue"
 	"github.com/redis/go-redis/v9"
-  "github.com/jordinkolman/valkyrie-commerce/internal/queue"
 )
 
 // max 5MB payload size (well more than sufficient for webhooks)
@@ -20,7 +25,7 @@ type Server struct {
 func main() {
   log.Println("Setting up connection to Redis message queue...")
 
-  client, err := queue.NewRedisClient("localhost:6379")
+  client, err := queue.NewRedisClient(os.Getenv("REDIS_URL"))
   if err != nil {
     log.Fatal("Could not connect to Redis: ", err.Error())
   }
@@ -33,11 +38,35 @@ func main() {
   mux := http.NewServeMux()
   mux.HandleFunc("/webhook", srv.ingestWebhookRequest)
 
-  log.Println("Summoning Bifrost on port 8080...")
-  err = http.ListenAndServe(":8080", mux)
-  if err != nil {
-    log.Fatal(err)
+  port := fmt.Sprintf(":%s", os.Getenv("PORT"))
+  httpServer := &http.Server{
+    Addr: port,
+    Handler: mux,
   }
+
+  go func() {
+    log.Printf("Summoning Bifrost on port %s...\n", port)
+    if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+      log.Fatalf("Server crashed: %v", err)
+    }
+  }()
+
+  // Channel to receive server terminate request
+  quit := make(chan os.Signal, 1)
+
+  signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+  <-quit
+  log.Println("Kill signal received. Shutting down gracefully...")
+
+  ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+  defer cancel()
+
+  if err := httpServer.Shutdown(ctx); err != nil {
+    log.Fatalf("Server forced to shutdown abruptly: %v", err)
+  }
+
+  log.Println("Bifrost exited properly.")
 }
 
 func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +86,9 @@ func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) 
     return
   }
 
-  ctx := context.Background()
+  ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+  defer cancel()
+
   err = srv.redisClient.XAdd(ctx, &redis.XAddArgs{
     Stream: "incoming_webhooks",
     Values: map[string]interface{}{
