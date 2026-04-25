@@ -25,7 +25,12 @@ type Server struct {
 func main() {
   log.Println("Setting up connection to Redis message queue...")
 
+  redisURLStr := os.Getenv("REDIS_URL")
+  if redisURLStr == "" {
+    log.Fatal("REDIS_URL environment variable missing")
+  }
   client, err := queue.NewRedisClient(os.Getenv("REDIS_URL"))
+
   if err != nil {
     log.Fatal("Could not connect to Redis: ", err.Error())
   }
@@ -38,7 +43,12 @@ func main() {
   mux := http.NewServeMux()
   mux.HandleFunc("/webhook", srv.ingestWebhookRequest)
 
-  port := fmt.Sprintf(":%s", os.Getenv("PORT"))
+  portStr := os.Getenv("PORT")
+  if portStr == "" {
+    log.Fatal("PORT environment variable missing")
+  }
+
+  port := fmt.Sprintf(":%s", portStr)
   httpServer := &http.Server{
     Addr: port,
     Handler: mux,
