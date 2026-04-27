@@ -19,7 +19,7 @@ Bifrost is designed exclusively for speed and memory safety. It performs no JSON
 
 
 #### Prerequisites
-* Go 1.21+
+* Go 1.22+
 * Docker & Docker Compose
 * `make` utility
 

@@ -41,8 +41,23 @@ func main() {
   defer func() { _ = client.Close() }()
   log.Println("Connected to Redis!")
 
+  // fatProviders provide webhooks with complete order data
+  fatProviders := []string{"shopify", "woocommerce"}
+  // thinProviders provide webhooks with an event id that requires an API call to get details
+  // these are pushed to a different stream so the Munin enricher service can gather these details
+  thinProviders := []string{"amazon", "bigcommerce", "etsy", "walmart", "ebay", "stripe"}
   mux := http.NewServeMux()
-  mux.HandleFunc("/webhook", srv.ingestWebhookRequest)
+
+  for _, provider := range fatProviders {
+    route := fmt.Sprintf("POST /webhook/%s", provider)
+    mux.HandleFunc(route, srv.handleFatWebhook)
+  }
+
+  for _, provider := range thinProviders {
+    route := fmt.Sprintf("POST /webhook/%s", provider)
+    mux.HandleFunc(route, srv.handleThinWebhook)
+  }
+
 
   portStr := os.Getenv("PORT")
   if portStr == "" {
@@ -88,13 +103,18 @@ func main() {
   log.Println("Bifrost exited properly.")
 }
 
-func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) {
-  if r.Method != http.MethodPost {
-    http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-    return
-  }
-  log.Printf("Received %s request from %s\n", r.Method, r.RemoteAddr)
+func (srv *Server) handleFatWebhook(w http.ResponseWriter, r *http.Request) {
+  log.Printf("Received payload from %s\n", r.RemoteAddr)
+  srv.ingestToStream(w, r, "incoming_webhooks")
+}
 
+func (srv *Server) handleThinWebhook(w http.ResponseWriter, r *http.Request) {
+  log.Printf("Received event notification from %s\n", r.RemoteAddr)
+  srv.ingestToStream(w, r, "thin_webhooks")
+}
+
+
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName string) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -109,7 +129,7 @@ func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) 
   defer cancel()
 
   err = srv.redisClient.XAdd(ctx, &redis.XAddArgs{
-    Stream: "incoming_webhooks",
+    Stream: streamName,
     Values: map[string]interface{}{
       "payload": string(payloadBytes),
     },
