@@ -30,7 +30,7 @@ func main() {
   if redisURLStr == "" {
     log.Fatal("REDIS_URL environment variable missing")
   }
-  client, err := queue.NewRedisClient(os.Getenv(redisURLStr))
+  client, err := queue.NewRedisClient(redisURLStr)
 
   if err != nil {
     log.Fatal("Could not connect to Redis: ", err.Error())
@@ -41,8 +41,30 @@ func main() {
   defer func() { _ = client.Close() }()
   log.Println("Connected to Redis!")
 
+  // fatProviders provide webhooks with complete order data
+  fatProviders := []string{"shopify", "woocommerce"}
+  // thinProviders provide webhooks with an event id that requires an API call to get details
+  // these are pushed to a different stream so the Munin enricher service can gather these details
+  thinProviders := []string{"amazon", "bigcommerce", "etsy", "walmart", "ebay", "stripe"}
   mux := http.NewServeMux()
-  mux.HandleFunc("/webhook", srv.ingestWebhookRequest)
+
+  for _, provider := range fatProviders {
+    p := provider
+    route := fmt.Sprintf("POST /webhook/%s", provider)
+    // handler wrapped in Closure to allow persistance of provider identity 
+    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request){
+      srv.handleFatWebhook(w, r, p)
+    })
+  }
+
+  for _, provider := range thinProviders {
+    p := provider
+    route := fmt.Sprintf("POST /webhook/%s", provider)
+    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+      srv.handleThinWebhook(w, r, p)
+    })
+  }
+
 
   portStr := os.Getenv("PORT")
   if portStr == "" {
@@ -88,13 +110,18 @@ func main() {
   log.Println("Bifrost exited properly.")
 }
 
-func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) {
-  if r.Method != http.MethodPost {
-    http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-    return
-  }
-  log.Printf("Received %s request from %s\n", r.Method, r.RemoteAddr)
+func (srv *Server) handleFatWebhook(w http.ResponseWriter, r *http.Request, provider string) {
+  log.Printf("Received payload from %s at %s\n", provider, r.RemoteAddr)
+  srv.ingestToStream(w, r, "incoming_webhooks", provider)
+}
 
+func (srv *Server) handleThinWebhook(w http.ResponseWriter, r *http.Request, provider string) {
+  log.Printf("Received event notification from %s at %s\n", provider, r.RemoteAddr)
+  srv.ingestToStream(w, r, "thin_webhooks", provider)
+}
+
+
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, provider string) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -109,8 +136,9 @@ func (srv *Server) ingestWebhookRequest(w http.ResponseWriter, r *http.Request) 
   defer cancel()
 
   err = srv.redisClient.XAdd(ctx, &redis.XAddArgs{
-    Stream: "incoming_webhooks",
+    Stream: streamName,
     Values: map[string]interface{}{
+      "provider": provider,
       "payload": string(payloadBytes),
     },
   }).Err()

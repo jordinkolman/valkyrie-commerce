@@ -19,7 +19,7 @@ Bifrost is designed exclusively for speed and memory safety. It performs no JSON
 
 
 #### Prerequisites
-* Go 1.21+
+* Go 1.22+
 * Docker & Docker Compose
 * `make` utility
 
@@ -50,10 +50,10 @@ make run-bifrost
 
 #### Testing
 
-Send a raw POST request to the local endpoint:
+Send a raw POST request to the provider-scoped endpoint:
 
 ```bash
-curl -X POST http://localhost:8080/webhook \
+curl -X POST http://localhost:8080/webhook/shopify \
   -H "Content-Type: application/json" \
   -d '{"event": "order_created", "id": 12345}'
 ```
