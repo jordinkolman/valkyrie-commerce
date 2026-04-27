@@ -30,7 +30,7 @@ func main() {
   if redisURLStr == "" {
     log.Fatal("REDIS_URL environment variable missing")
   }
-  client, err := queue.NewRedisClient(os.Getenv(redisURLStr))
+  client, err := queue.NewRedisClient(redisURLStr)
 
   if err != nil {
     log.Fatal("Could not connect to Redis: ", err.Error())
@@ -49,13 +49,20 @@ func main() {
   mux := http.NewServeMux()
 
   for _, provider := range fatProviders {
+    p := provider
     route := fmt.Sprintf("POST /webhook/%s", provider)
-    mux.HandleFunc(route, srv.handleFatWebhook)
+    // handler wrapped in Closure to allow persistance of provider identity 
+    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request){
+      srv.handleFatWebhook(w, r, p)
+    })
   }
 
   for _, provider := range thinProviders {
+    p := provider
     route := fmt.Sprintf("POST /webhook/%s", provider)
-    mux.HandleFunc(route, srv.handleThinWebhook)
+    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+      srv.handleThinWebhook(w, r, p)
+    })
   }
 
 
@@ -103,18 +110,18 @@ func main() {
   log.Println("Bifrost exited properly.")
 }
 
-func (srv *Server) handleFatWebhook(w http.ResponseWriter, r *http.Request) {
-  log.Printf("Received payload from %s\n", r.RemoteAddr)
-  srv.ingestToStream(w, r, "incoming_webhooks")
+func (srv *Server) handleFatWebhook(w http.ResponseWriter, r *http.Request, provider string) {
+  log.Printf("Received payload from %s at %s\n", provider, r.RemoteAddr)
+  srv.ingestToStream(w, r, "incoming_webhooks", provider)
 }
 
-func (srv *Server) handleThinWebhook(w http.ResponseWriter, r *http.Request) {
-  log.Printf("Received event notification from %s\n", r.RemoteAddr)
-  srv.ingestToStream(w, r, "thin_webhooks")
+func (srv *Server) handleThinWebhook(w http.ResponseWriter, r *http.Request, provider string) {
+  log.Printf("Received event notification from %s at %s\n", provider, r.RemoteAddr)
+  srv.ingestToStream(w, r, "thin_webhooks", provider)
 }
 
 
-func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName string) {
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, provider string) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -131,6 +138,7 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
   err = srv.redisClient.XAdd(ctx, &redis.XAddArgs{
     Stream: streamName,
     Values: map[string]interface{}{
+      "provider": provider,
       "payload": string(payloadBytes),
     },
   }).Err()
