@@ -23,6 +23,27 @@ type Server struct {
   redisClient *redis.Client
 }
 
+type WebhookType string
+
+const (
+  Fat WebhookType = "fat"
+  Thin WebhookType = "thin"
+)
+
+type Provider struct {
+  Name string
+  IdempotencyHeader string
+  Type WebhookType
+}
+
+var SupportedProviders = []Provider{
+  {Name: "shopify", IdempotencyHeader: "X-Shopify-Webhook-Id", Type: Fat},
+  {Name: "woocommerce", IdempotencyHeader: "X-WC-Webhook-ID", Type: Fat},
+  {Name: "stripe", IdempotencyHeader: "Stripe-Signature", Type: Thin},
+  {Name: "amazon", IdempotencyHeader: "x-amzn-RequestId", Type: Thin},
+}
+
+
 func main() {
   log.Println("Setting up connection to Redis message queue...")
 
@@ -41,30 +62,13 @@ func main() {
   defer func() { _ = client.Close() }()
   log.Println("Connected to Redis!")
 
-  // fatProviders provide webhooks with complete order data
-  fatProviders := []string{"shopify", "woocommerce"}
-  // thinProviders provide webhooks with an event id that requires an API call to get details
-  // these are pushed to a different stream so the Munin enricher service can gather these details
-  thinProviders := []string{"amazon", "bigcommerce", "etsy", "walmart", "ebay", "stripe"}
   mux := http.NewServeMux()
 
-  for _, provider := range fatProviders {
-    p := provider
-    route := fmt.Sprintf("POST /webhook/%s", provider)
+  for _, provider := range SupportedProviders {
+    route := fmt.Sprintf("POST /webhook/%s", provider.Name)
     // handler wrapped in Closure to allow persistance of provider identity 
-    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request){
-      srv.handleFatWebhook(w, r, p)
-    })
+    mux.HandleFunc(route, srv.buildWebhookHandler(provider))
   }
-
-  for _, provider := range thinProviders {
-    p := provider
-    route := fmt.Sprintf("POST /webhook/%s", provider)
-    mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
-      srv.handleThinWebhook(w, r, p)
-    })
-  }
-
 
   portStr := os.Getenv("PORT")
   if portStr == "" {
@@ -110,18 +114,26 @@ func main() {
   log.Println("Bifrost exited properly.")
 }
 
-func (srv *Server) handleFatWebhook(w http.ResponseWriter, r *http.Request, provider string) {
-  log.Printf("Received payload from %s at %s\n", provider, r.RemoteAddr)
-  srv.ingestToStream(w, r, "incoming_webhooks", provider)
+func (srv *Server) buildWebhookHandler(p Provider) http.HandlerFunc {
+  return func(w http.ResponseWriter, r *http.Request) {
+    log.Printf("Receved %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
+
+    idempKey := r.Header.Get(p.IdempotencyHeader)
+    if idempKey == "" {
+      log.Printf("Warning: Missing idempotency key for %s", p.Name)
+      idempKey = "unknown"
+    }
+
+    streamName := "incoming_webhooks"
+    if p.Type == Thin {
+      streamName = "thin_webhooks"
+    }
+
+    srv.ingestToStream(w, r, streamName, idempKey)
+  }
 }
 
-func (srv *Server) handleThinWebhook(w http.ResponseWriter, r *http.Request, provider string) {
-  log.Printf("Received event notification from %s at %s\n", provider, r.RemoteAddr)
-  srv.ingestToStream(w, r, "thin_webhooks", provider)
-}
-
-
-func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, provider string) {
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, idempKey string) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -138,7 +150,7 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
   err = srv.redisClient.XAdd(ctx, &redis.XAddArgs{
     Stream: streamName,
     Values: map[string]interface{}{
-      "provider": provider,
+      "webhook_id": idempKey,
       "payload": string(payloadBytes),
     },
   }).Err()
