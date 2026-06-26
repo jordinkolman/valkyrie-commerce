@@ -1,14 +1,14 @@
 local counter = 0
 
-setup = function(thread)
-  thread:set("id", counter)
-  counter = counter + 1
+function setup(thread)
+  thread:set("thread_id", thread:get("id"))
+  thread:set("thread_counter", counter)
 end
 
-request = function()
-  counter = counter + 1
-  local unique_id = "wrk-perf-test-" .. counter
-  
+function request()
+  thread_counter = thread_counter + 1
+
+  local unique_id = "wrk-perf-test-" .. thread_id .. "-" .. thread_counter
   local path = "/webhook/shopify"
   local method = "POST"
 
