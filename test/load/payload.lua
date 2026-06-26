@@ -1,8 +1,10 @@
-local counter = 0
+local worker_index = 0
 
 function setup(thread)
-  thread:set("thread_id", thread:get("id"))
-  thread:set("thread_counter", counter)
+  worker_index = worker_index + 1
+
+  thread:set("thread_id", worker_index)
+  thread:set("thread_counter", 0)
 end
 
 function request()
@@ -17,7 +19,7 @@ function request()
   headers["X-Shopify-Webhook-Id"] = unique_id
 
   local body = [[{
-    "id": ]] .. counter .. [[,
+    "id": ]] .. thread_counter .. [[,
     "email": "test-buyer@example.com",
     "total_price": "150.00",
     "currency": "USD",
