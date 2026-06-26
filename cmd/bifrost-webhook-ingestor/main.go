@@ -172,7 +172,7 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
   if idempKey == "unknown" || idempKey == "" {
     _, err := srv.redisClient.XAdd(ctx, &redis.XAddArgs{
       Stream: streamName,
-      MaxLen: int64(maxPayloadSize),
+      MaxLen: int64(maxStreamLength),
       Approx: true,
       Values: map[string]any{"webhook_id": "missing", "payload": string(payloadBytes)},
     }).Result()
