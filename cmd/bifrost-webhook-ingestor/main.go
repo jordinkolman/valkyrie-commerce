@@ -139,9 +139,9 @@ func (srv *Server) buildWebhookHandler(p Provider) http.HandlerFunc {
     log.Printf("Receved %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
 
     idempKey := r.Header.Get(p.IdempotencyHeader)
-    if idempKey == "" {
+    missingIdempotencyKey := idempKey == ""
+    if missingIdempotencyKey {
       log.Printf("Warning: Missing idempotency key for %s", p.Name)
-      idempKey = "unknown"
     }
 
     streamName := "incoming_webhooks"
@@ -149,11 +149,11 @@ func (srv *Server) buildWebhookHandler(p Provider) http.HandlerFunc {
       streamName = "thin_webhooks"
     }
 
-    srv.ingestToStream(w, r, streamName, idempKey)
+    srv.ingestToStream(w, r, streamName, idempKey, missingIdempotencyKey)
   }
 }
 
-func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, idempKey string) {
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, idempKey string, missingIdempotencyKey bool) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -164,12 +164,27 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
     return
   }
 
-  ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+  ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
   defer cancel()
+
+  maxStreamLength := 10000
+
+  if missingIdempotencyKey {
+    _, err := srv.redisClient.XAdd(ctx, &redis.XAddArgs{
+      Stream: streamName,
+      MaxLen: int64(maxStreamLength),
+      Approx: true,
+      Values: map[string]any{"webhook_id": "missing", "payload": string(payloadBytes)},
+    }).Result()
+    if err != nil {
+      log.Printf("Push to Redis stream failed: %v", err)
+      http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+    }
+    return
+  }
 
   lockKey := fmt.Sprintf("idempotency:%s", idempKey)
   ttlSeconds := 86400 // 24 Hours
-  maxStreamLength := 10000
 
   result, err := ingestScript.Run(ctx, srv.redisClient,
     []string{lockKey, streamName}, // KEYS
