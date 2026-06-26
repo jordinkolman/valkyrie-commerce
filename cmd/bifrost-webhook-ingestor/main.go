@@ -164,12 +164,27 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
     return
   }
 
-  ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+  ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
   defer cancel()
+
+  maxStreamLength := 10000
+
+  if idempKey == "unknown" || idempKey == "" {
+    _, err := srv.redisClient.XAdd(ctx, &redis.XAddArgs{
+      Stream: streamName,
+      MaxLen: int64(maxPayloadSize),
+      Approx: true,
+      Values: map[string]any{"webhook_id": "missing", "payload": string(payloadBytes)},
+    }).Result()
+    if err != nil {
+      log.Printf("Push to Redis stream failed: %v", err)
+      http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+    }
+    return
+  }
 
   lockKey := fmt.Sprintf("idempotency:%s", idempKey)
   ttlSeconds := 86400 // 24 Hours
-  maxStreamLength := 10000
 
   result, err := ingestScript.Run(ctx, srv.redisClient,
     []string{lockKey, streamName}, // KEYS
