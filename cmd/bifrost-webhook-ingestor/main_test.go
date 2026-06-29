@@ -95,7 +95,7 @@ func TestWebhookIngestion(t *testing.T) {
 		{
 			name:               "Valid Thin Webhook Routing (Stripe)",
 			provider:           stripeProvider,
-			payload:            []byte(`{"id": "evt_9999:, "event_type": "charge.succeeded"}`),
+			payload:            []byte(`{"id": "evt_9999", "event_type": "charge.succeeded"}`),
 			headers:            map[string]string{},
 			expectedStatus:     http.StatusOK,
 			expectedStreamName: "thin_webhooks",
