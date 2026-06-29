@@ -14,14 +14,14 @@ This directory contains multithreaded benchmarking scripts utilizing `wrk` to va
 
 | Metric | Measurement |
 | :--- | :--- |
-| **Throughput (RPS)** | 16,488 Req/Sec |
-| **Data Transfer** | 1.18 MB/sec |
-| **Average Latency** | 5.84 ms |
-| **Max Latency** | 76.68 ms |
+| **Throughput (RPS)** | 11,768.95 Req/Sec |
+| **Data Transfer** | 861.98 KB/sec |
+| **Average Latency** | 8.94 ms |
+| **Max Latency** | 201.52 ms |
 
 
 ### Analysis
-The sub-6ms average latency confirms the architectural thesis of the edge gateway. By deferring JSON deserialization to the background worker pool (Mimir) and collapsing deduplication and insertion into a single Redis Lua script execution, Bifrost successfully processes >16k events per second without CPU saturation or memory bloat.
+The sub-9ms average latency confirms the architectural thesis of the edge gateway. By deferring JSON deserialization to the background worker pool (Mimir) and collapsing deduplication and insertion into a single Redis Lua script execution, Bifrost successfully processes >11k events per second without CPU saturation or memory bloat.
 
 ### Running the Benchmark
 Ensure the local cluster is running (`make up` and `make run-bifrost`), then execute:
