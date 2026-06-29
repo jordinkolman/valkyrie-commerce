@@ -5,7 +5,7 @@ Bifrost is an edge gateway optimized strictly for speed and memory safety. It ac
 
 ## Technical Design
 
-Bifrost achieves >16,000 requests per second by completely bypassing standard application-layer bottlenecks:
+Bifrost achieves >11,000 requests per second by completely bypassing standard application-layer bottlenecks:
 
 1. **Zero-Allocation Routing:** Bifrost strictly refuses to unmarshal JSON payloads into Go structs. Idempotency keys are extracted from HTTP headers or parsed directly from raw byte slices using `gjson` to prevent memory allocation overhead.
 2. **Atomic Idempotency:** Checking for duplicate events and writing to the queue are collapsed into a single, atomic network hop to the Redis cache via a custom Lua script, eliminating distributed race conditions.
