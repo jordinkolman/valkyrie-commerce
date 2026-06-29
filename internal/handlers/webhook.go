@@ -64,6 +64,14 @@ func (srv *Server) BuildWebhookHandler(p config.Provider) http.HandlerFunc {
 	}
 }
 
+// fetchTenantSecret executes a Redis lookup from Heimdall's (The Auth Gateway Service) Auth DB 
+// Since Heimdall is undeveloped in this project as of now, we just return a dummy secret
+func (srv *Server) fetchTenantSecret(ctx context.Context, providerName string, request *http.Request) string {
+	// Extract tenant id from URL (i.e. /webhook/shopify/{tenant_id})
+	// Query Redis for tenant's specific webhook secret 
+	return "dummy_secret_for_local_testing"
+}
+
 // ingestToStream handles the core ingestion pipeline for an incoming webhook.
 // It enforces memory safety via bounded body reading, extracts the idempotency key 
 // based on the provider's configuration (header or payload), and executes an atomic 
@@ -76,6 +84,19 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
 	if err != nil {
 		slog.Error("Error reading body", "error", err)
 		http.Error(w, "Payload too large or malformed", http.StatusBadRequest)
+		return
+	}
+
+	sigHeader := r.Header.Get(p.SignatureHeader)
+	secret := srv.fetchTenantSecret(r.Context(), p.Name, r)
+
+	if !verifySignature(p.Name, payloadBytes, sigHeader, secret) {
+		slog.Warn("Cryptographic signature validation failed",
+			"provider", p.Name,
+			"ip", r.RemoteAddr,
+		)
+
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -108,7 +129,7 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 
-		slog.Info("Successfully ingested webhook payload (Keyless)", "payload_len", len(payloadBytes), "provider", p.Name, "remote_addr", r.RemoteAddr)
+		slog.Info("Successfully ingested webhook payload (Keyless)", "payload_len", len(payloadBytes), "provider", p.Name, "ip", r.RemoteAddr)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -133,6 +154,6 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
 		return
 	}
 
-	slog.Info("Successfully ingested webhook payload", "payload_len", len(payloadBytes), "provider", p.Name, "remote_addr", r.RemoteAddr)
+	slog.Info("Successfully ingested webhook payload", "payload_len", len(payloadBytes), "provider", p.Name, "ip", r.RemoteAddr)
 	w.WriteHeader(http.StatusOK)
 }

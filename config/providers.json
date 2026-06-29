@@ -1,6 +1,7 @@
 [
   {
     "name": "shopify",
+    "signature_header": "X-Shopify-Hmac-Sha256",
     "idempotency_source": "header",
     "idempotency_key": "X-Shopify-Webhook-Id",
     "type": "fat"
@@ -8,20 +9,16 @@
   {
 
     "name": "woocommerce",
+    "signature_header": "X-WC-Webhook-Signature",
     "idempotency_source": "payload",
     "idempotency_key": "id",
     "type": "fat"
   },
   {
     "name": "stripe",
+    "signature_header": "Stripe-Signature",
     "idempotency_source": "payload",
     "idempotency_key": "id",
-    "type": "thin"
-  },
-  {
-    "name": "amazon",
-    "idempotency_source": "header",
-    "idempotency_key": "x-amzn-sns-message-id",
     "type": "thin"
   }
 ]
