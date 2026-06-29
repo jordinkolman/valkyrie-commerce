@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,21 +24,21 @@ import (
 const maxPayloadSize = 5 * 1024 * 1024
 
 type Server struct {
-  redisClient *redis.Client
+	redisClient *redis.Client
 }
 
 type WebhookType string
 
 const (
-  Fat WebhookType = "fat"
-  Thin WebhookType = "thin"
+	Fat  WebhookType = "fat"
+	Thin WebhookType = "thin"
 )
 
 type Provider struct {
-	Name string `json:"name"`
-	IdempotencySource string `json:"idempotency_source"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Type WebhookType `json:"type"`
+	Name              string      `json:"name"`
+	IdempotencySource string      `json:"idempotency_source"`
+	IdempotencyKey    string      `json:"idempotency_key"`
+	Type              WebhookType `json:"type"`
 }
 
 // Lua Script to optimize idempotent write times into a single request
@@ -102,165 +103,175 @@ func loadProviders(filepath string) ([]Provider, error) {
 }
 
 func main() {
-  log.Println("Setting up connection to Redis message queue...")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
-  redisURLStr := os.Getenv("REDIS_URL")
-  if redisURLStr == "" {
-    log.Fatal("REDIS_URL environment variable missing")
-  }
-  client, err := queue.NewRedisClient(redisURLStr)
+	slog.Info("Setting up connection to Redis message queue...")
 
-  if err != nil {
-    log.Fatal("Could not connect to Redis: ", err.Error())
-  }
-  srv := &Server{
-    redisClient: client,
-  }
-  defer func() { _ = client.Close() }()
-  log.Println("Connected to Redis!")
+	redisURLStr := os.Getenv("REDIS_URL")
+	if redisURLStr == "" {
+		slog.Error("REDIS_URL environment variable missing")
+		os.Exit(1)
+	}
+	client, err := queue.NewRedisClient(redisURLStr)
 
-  configPath := os.Getenv("PROVIDER_CONFIG_PATH")
-  if configPath == "" {
-	  exePath, err := os.Executable()
-	  if err != nil {
-		  log.Fatalf("Fatal: Could not resolve executable path: %v", err)
-	  }
-	  configPath = filepath.Join(filepath.Dir(exePath), "config", "providers.json")
-  }
+	if err != nil {
+		slog.Error("Could not connect to Redis", "error", err.Error())
+		os.Exit(1)
+	}
+	srv := &Server{
+		redisClient: client,
+	}
+	defer func() { _ = client.Close() }()
+	slog.Info("Connected to Redis!")
 
-  providers, err := loadProviders(configPath)
-  if err != nil {
-	  log.Fatalf("Fatal: Could not load provider configurations: %v", err)
-  }
-  log.Printf("Loaded %d webhook providers from config", len(providers))
+	configPath := os.Getenv("PROVIDER_CONFIG_PATH")
+	if configPath == "" {
+		exePath, err := os.Executable()
+		if err != nil {
+			slog.Error("Fatal: Could not resolve executable path", "error", err)
+			os.Exit(1)
+		}
+		configPath = filepath.Join(filepath.Dir(exePath), "config", "providers.json")
+	}
 
-  mux := http.NewServeMux()
-  for _, provider := range providers {
-	  route := fmt.Sprintf("POST /webhook/%s", provider.Name)
-	  mux.HandleFunc(route, srv.buildWebhookHandler(provider))
-  }
+	providers, err := loadProviders(configPath)
+	if err != nil {
+		slog.Error("Fatal: Could not load provider configurations", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Loaded webhook providers from config", "count", len(providers))
 
-  portStr := os.Getenv("PORT")
-  if portStr == "" {
-    log.Fatal("PORT environment variable missing")
-  }
+	mux := http.NewServeMux()
+	for _, provider := range providers {
+		route := fmt.Sprintf("POST /webhook/%s", provider.Name)
+		mux.HandleFunc(route, srv.buildWebhookHandler(provider))
+	}
 
-  port := fmt.Sprintf(":%s", portStr)
-  httpServer := &http.Server{
-    Addr:              port,
-    Handler:           mux,
-    ReadHeaderTimeout: 5 * time.Second,
-    ReadTimeout:       15 * time.Second,
-    WriteTimeout:      15 * time.Second,
-    IdleTimeout:       60 * time.Second,
-  }
-  
-  // channel for receiving errors from server crash
-  serverErr := make(chan error, 1)
-  go func() {
-    log.Printf("Summoning Bifrost on port %s...\n", port)
-    if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-      serverErr <- err
-    }
-  }()
+	portStr := os.Getenv("PORT")
+	if portStr == "" {
+		slog.Error("PORT environment variable missing")
+		os.Exit(1)
+	}
 
-  // Channel to receive server terminate request
-  quit := make(chan os.Signal, 1)
-  signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	port := fmt.Sprintf(":%s", portStr)
+	httpServer := &http.Server{
+		Addr:              port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
-  select {
-  case err := <- serverErr:
-    log.Printf("Server crashed: %v", err)
-  case <-quit:
-    log.Println("Kill signal received. Shutting down gracefully...")
-  }
-  ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-  defer cancel()
+	// channel for receiving errors from server crash
+	serverErr := make(chan error, 1)
+	go func() {
+		slog.Info("Summoning Bifrost", "port", port)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
 
-  if err := httpServer.Shutdown(ctx); err != nil {
-    log.Fatalf("Server forced to shutdown abruptly: %v", err)
-  }
+	// Channel to receive server terminate request
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-  log.Println("Bifrost exited properly.")
+	select {
+	case err := <-serverErr:
+		slog.Error("Server crashed", "error", err)
+		os.Exit(1)
+	case <-quit:
+		slog.Info("Kill signal received. Shutting down gracefully")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(ctx); err != nil {
+		slog.Error("Server forced to shutdown abruptly", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("Bifrost exited properly.")
 }
 
 func (srv *Server) buildWebhookHandler(p Provider) http.HandlerFunc {
-  return func(w http.ResponseWriter, r *http.Request) {
-    log.Printf("Received %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
-    streamName := "incoming_webhooks"
-    if p.Type == Thin {
-      streamName = "thin_webhooks"
-    }
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Received %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
+		streamName := "incoming_webhooks"
+		if p.Type == Thin {
+			streamName = "thin_webhooks"
+		}
 
-    srv.ingestToStream(w, r, streamName, p)
-  }
+		srv.ingestToStream(w, r, streamName, p)
+	}
 }
 
 func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName string, p Provider) {
-  // Enforce max payload size to protect memory
-  r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
+	// Enforce max payload size to protect memory
+	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
-  payloadBytes, err := io.ReadAll(r.Body)
-  if err != nil {
-    log.Printf("Error reading body: %v\n", err)
-    http.Error(w, "Payload too large or malformed", http.StatusBadRequest)
-    return
-  }
+	payloadBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("Error reading body", "error", err)
+		http.Error(w, "Payload too large or malformed", http.StatusBadRequest)
+		return
+	}
 
-  var idempKey string
-  if p.IdempotencySource == "header" {
-	  idempKey = r.Header.Get(p.IdempotencyKey)
-  } else if p.IdempotencySource == "payload" {
-	  idempKey = gjson.GetBytes(payloadBytes, p.IdempotencyKey).String()
-  }
+	var idempKey string
+	if p.IdempotencySource == "header" {
+		idempKey = r.Header.Get(p.IdempotencyKey)
+	} else if p.IdempotencySource == "payload" {
+		idempKey = gjson.GetBytes(payloadBytes, p.IdempotencyKey).String()
+	}
 
-  missingIdempotencyKey := idempKey == ""
-  if missingIdempotencyKey {
-	  log.Printf("Warning: Missing idempotency key for %s", p.Name)
-  }
+	missingIdempotencyKey := idempKey == ""
+	if missingIdempotencyKey {
+		slog.Warn("Warning: Missing idempotency key", "provider", p.Name)
+	}
 
-  ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
-  defer cancel()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+	defer cancel()
 
-  maxStreamLength := 10000
+	maxStreamLength := 10000
 
-  if missingIdempotencyKey {
-    _, err := srv.redisClient.XAdd(ctx, &redis.XAddArgs{
-      Stream: streamName,
-      MaxLen: int64(maxStreamLength),
-      Approx: true,
-      Values: map[string]any{"webhook_id": "missing", "payload": string(payloadBytes)},
-    }).Result()
-    if err != nil {
-      log.Printf("Push to Redis stream failed: %v", err)
-      http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-    }
+	if missingIdempotencyKey {
+		_, err := srv.redisClient.XAdd(ctx, &redis.XAddArgs{
+			Stream: streamName,
+			MaxLen: int64(maxStreamLength),
+			Approx: true,
+			Values: map[string]any{"webhook_id": "missing", "payload": string(payloadBytes)},
+		}).Result()
+		if err != nil {
+			slog.Error("Push to Redis stream failed", "error", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 
-	log.Printf("Successfully ingested %d bytes (Keyless) from %s (%s)\n", len(payloadBytes), p.Name, r.RemoteAddr)
+		slog.Info("Successfully ingested webhook payload (Keyless)", "payload_len", len(payloadBytes), "provider", p.Name, "remote_addr", r.RemoteAddr)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	lockKey := fmt.Sprintf("idempotency:%s", idempKey)
+	ttlSeconds := 86400 // 24 Hours
+
+	result, err := ingestScript.Run(ctx, srv.redisClient,
+		[]string{lockKey, streamName}, // KEYS
+		ttlSeconds, maxStreamLength, idempKey, string(payloadBytes),
+	).Int()
+
+	if err != nil {
+		slog.Error("Redis script execution failed", "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	if result == 0 {
+		slog.Info("Duplicate webhook dropped", "duplicate_key", idempKey)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	slog.Info("Successfully ingested webhook payload", "payload_len", len(payloadBytes), "provider", p.Name, "remote_addr", r.RemoteAddr)
 	w.WriteHeader(http.StatusOK)
-    return
-  }
-
-  lockKey := fmt.Sprintf("idempotency:%s", idempKey)
-  ttlSeconds := 86400 // 24 Hours
-
-  result, err := ingestScript.Run(ctx, srv.redisClient,
-    []string{lockKey, streamName}, // KEYS
-    ttlSeconds, maxStreamLength, idempKey, string(payloadBytes),
-  ).Int()
-
-  if err != nil {
-    log.Printf("Redis script execution failed: %v", err)
-    http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-    return
-  }
-
-  if result == 0 {
-    log.Printf("Duplicate webhook dropped: %s", idempKey)
-    w.WriteHeader(http.StatusOK)
-    return
-  }
-
-  log.Printf("Successfully ingested %d bytes from %s\n", len(payloadBytes), r.RemoteAddr)
-  w.WriteHeader(http.StatusOK)
 }
