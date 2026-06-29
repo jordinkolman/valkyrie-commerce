@@ -1,3 +1,6 @@
+// Package main is the execution entrypoint for the Bifrost edge gateway.
+// It initializes structured telemetry, establishes infrastructure connections, 
+// loads dynamic routing configurations, and binds the HTTP server to the designated port.
 package main
 
 import (

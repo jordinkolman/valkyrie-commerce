@@ -1,59 +1,42 @@
-# Valkyrie Commerce
+# Valkyrie Commerce Infrastructure
 
-An event-driven, microservice-based B2B e-commerce infrastructure platform built in Go.
+An event-driven, microservice-based B2B e-commerce infrastructure platform built in Go. 
 
-This repository uses a monorepo structure to house multiple decoupled services that communicate asynchronously via Redis Streams, designed for high throughput and fault tolerance.
+This repository utilizes an idiomatic Go monorepo architecture (`cmd/`, `internal/`, `pkg/`) to house decoupled services that communicate asynchronously via Redis Streams. It is designed for high throughput, memory safety, and fault-tolerant event ingestion.
 
-## 🏗 Architecture
+## Architecture
 
-* **Bifrost (Edge Ingestor):** A high-throughput, synchronous HTTP gateway that receives incoming webhooks, validates them, and pushes raw payloads to a message queue.
-* **Mimir (Normalizer):** *(In Development)* A concurrent worker pool that consumes raw events, normalizes payloads into strict domain models, and writes to the core ledger.
-* **Heimdall (Auth Gateway):** *(Planned)*
+* **Bifrost (Edge Gateway):** A high-throughput, synchronous HTTP gateway that receives incoming webhooks, protects memory bounds, enforces deduplication atomically via Lua, and pushes raw byte arrays to a Redis message queue.
+
+* **Mimir (Consumer Pool):** *(In Development)* A concurrent background worker pool that consumes raw events from Redis via consumer groups, normalizes payloads, and persists them to the relational ledger.
+
+## Repository Structure
+
+* `cmd/`: Entry points for microservice binaries.
+* `internal/`: Private domain logic, HTTP handlers, and configuration parsers.
+* `deploy/`: Container orchestration and infrastructure templates.
+* `config/`: JSON definitions for webhook provider routing.
+* `test/load/`: Multi-threaded `wrk` Lua scripts for local benchmarking.
+
+## Local Development
 
 
-## 🚀 Services
+**1. Boot the Message Broker**
 
-
-### 1. Bifrost (Webhook Ingestor)
-Bifrost is designed exclusively for speed and memory safety. It performs no JSON parsing or database lookups. It utilizes `http.MaxBytesReader` to strictly cap memory allocation (preventing OOM panics from malicious payloads) and drops valid requests directly into a Redis Stream (`incoming_webhooks`) for asynchronous processing.
-
-
-#### Prerequisites
-* Go 1.22+
-* Docker & Docker Compose
-* `make` utility
-
-#### Running Locally
-
-**1. Boot the Message Queue**
 Start the Redis Stack (includes RedisInsight on port 8001):
 ```bash
-docker-compose up -d
-```
 
-**2. Configure the Environment**
-
-Create a `.env` file at the root of the project:
-```text
-PORT=8080
-REDIS_URL=localhost:6379
+make up
 ```
 
 
-**3. Start the Service**
-The project uses a Makefile to automatically inject environment variables before booting the Go binary.
+**2. Start Bifrost**
 
 ```bash
 make run-bifrost
-
 ```
 
-#### Testing
-
-Send a raw POST request to the provider-scoped endpoint:
-
+**3. Run the Test Suite**
 ```bash
-curl -X POST http://localhost:8080/webhook/shopify \
-  -H "Content-Type: application/json" \
-  -d '{"event": "order_created", "id": 12345}'
+go test -v -race ./internal/...
 ```
