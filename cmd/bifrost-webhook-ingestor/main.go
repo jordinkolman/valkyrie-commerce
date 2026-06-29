@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/jordinkolman/valkyrie-commerce/internal/queue"
 	"github.com/redis/go-redis/v9"
+	"github.com/tidwall/gjson"
 )
 
 // max 5MB payload size (well more than sufficient for webhooks)
@@ -31,16 +34,10 @@ const (
 )
 
 type Provider struct {
-  Name string
-  IdempotencyHeader string
-  Type WebhookType
-}
-
-var SupportedProviders = []Provider{
-  {Name: "shopify", IdempotencyHeader: "X-Shopify-Webhook-Id", Type: Fat},
-  {Name: "woocommerce", IdempotencyHeader: "X-WC-Webhook-ID", Type: Fat},
-  {Name: "stripe", IdempotencyHeader: "Stripe-Signature", Type: Thin},
-  {Name: "amazon", IdempotencyHeader: "x-amzn-RequestId", Type: Thin},
+	Name string `json:"name"`
+	IdempotencySource string `json:"idempotency_source"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Type WebhookType `json:"type"`
 }
 
 // Lua Script to optimize idempotent write times into a single request
@@ -64,6 +61,46 @@ var ingestScript = redis.NewScript(`
   return 1
 `)
 
+func loadProviders(filepath string) ([]Provider, error) {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	dec := json.NewDecoder(file)
+	dec.DisallowUnknownFields()
+
+	var providers []Provider
+	if err = dec.Decode(&providers); err != nil {
+		return nil, fmt.Errorf("failed to decode provider config: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(providers))
+
+	for i, p := range providers {
+		if p.Name == "" || p.IdempotencyKey == "" {
+			return nil, fmt.Errorf("provider[%d]: missing required fields", i)
+		}
+		switch p.IdempotencySource {
+		case "header", "payload":
+		default:
+			return nil, fmt.Errorf("provider[%d]: unsupported idempotency_source %q", i, p.IdempotencySource)
+		}
+		switch p.Type {
+		case Fat, Thin:
+		default:
+			return nil, fmt.Errorf("provider[%d]: unsupported type %q", i, p.Type)
+		}
+		if _, dup := seen[p.Name]; dup {
+			return nil, fmt.Errorf("duplicate provider name %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
+	}
+
+	return providers, nil
+}
+
 func main() {
   log.Println("Setting up connection to Redis message queue...")
 
@@ -82,12 +119,25 @@ func main() {
   defer func() { _ = client.Close() }()
   log.Println("Connected to Redis!")
 
-  mux := http.NewServeMux()
+  configPath := os.Getenv("PROVIDER_CONFIG_PATH")
+  if configPath == "" {
+	  exePath, err := os.Executable()
+	  if err != nil {
+		  log.Fatalf("Fatal: Could not resolve executable path: %v", err)
+	  }
+	  configPath = filepath.Join(filepath.Dir(exePath), "config", "providers.json")
+  }
 
-  for _, provider := range SupportedProviders {
-    route := fmt.Sprintf("POST /webhook/%s", provider.Name)
-    // handler wrapped in Closure to allow persistance of provider identity 
-    mux.HandleFunc(route, srv.buildWebhookHandler(provider))
+  providers, err := loadProviders(configPath)
+  if err != nil {
+	  log.Fatalf("Fatal: Could not load provider configurations: %v", err)
+  }
+  log.Printf("Loaded %d webhook providers from config", len(providers))
+
+  mux := http.NewServeMux()
+  for _, provider := range providers {
+	  route := fmt.Sprintf("POST /webhook/%s", provider.Name)
+	  mux.HandleFunc(route, srv.buildWebhookHandler(provider))
   }
 
   portStr := os.Getenv("PORT")
@@ -136,24 +186,17 @@ func main() {
 
 func (srv *Server) buildWebhookHandler(p Provider) http.HandlerFunc {
   return func(w http.ResponseWriter, r *http.Request) {
-    log.Printf("Receved %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
-
-    idempKey := r.Header.Get(p.IdempotencyHeader)
-    missingIdempotencyKey := idempKey == ""
-    if missingIdempotencyKey {
-      log.Printf("Warning: Missing idempotency key for %s", p.Name)
-    }
-
+    log.Printf("Received %s webhook from %s (%s)\n", p.Type, p.Name, r.RemoteAddr)
     streamName := "incoming_webhooks"
     if p.Type == Thin {
       streamName = "thin_webhooks"
     }
 
-    srv.ingestToStream(w, r, streamName, idempKey, missingIdempotencyKey)
+    srv.ingestToStream(w, r, streamName, p)
   }
 }
 
-func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName, idempKey string, missingIdempotencyKey bool) {
+func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName string, p Provider) {
   // Enforce max payload size to protect memory
   r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
 
@@ -162,6 +205,18 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
     log.Printf("Error reading body: %v\n", err)
     http.Error(w, "Payload too large or malformed", http.StatusBadRequest)
     return
+  }
+
+  var idempKey string
+  if p.IdempotencySource == "header" {
+	  idempKey = r.Header.Get(p.IdempotencyKey)
+  } else if p.IdempotencySource == "payload" {
+	  idempKey = gjson.GetBytes(payloadBytes, p.IdempotencyKey).String()
+  }
+
+  missingIdempotencyKey := idempKey == ""
+  if missingIdempotencyKey {
+	  log.Printf("Warning: Missing idempotency key for %s", p.Name)
   }
 
   ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
@@ -181,7 +236,7 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
       http.Error(w, "Internal Server Error", http.StatusInternalServerError)
     }
 
-	log.Printf("Successfully ingested %d bytes (Keyless) from %s\n", len(payloadBytes), r.RemoteAddr)
+	log.Printf("Successfully ingested %d bytes (Keyless) from %s (%s)\n", len(payloadBytes), p.Name, r.RemoteAddr)
 	w.WriteHeader(http.StatusOK)
     return
   }

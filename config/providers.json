@@ -1,0 +1,27 @@
+[
+  {
+    "name": "shopify",
+    "idempotency_source": "header",
+    "idempotency_key": "X-Shopify-Webhook-Id",
+    "type": "fat"
+  },
+  {
+
+    "name": "woocommerce",
+    "idempotency_source": "payload",
+    "idempotency_key": "id",
+    "type": "fat"
+  },
+  {
+    "name": "stripe",
+    "idempotency_source": "payload",
+    "idempotency_key": "id",
+    "type": "thin"
+  },
+  {
+    "name": "amazon",
+    "idempotency_source": "header",
+    "idempotency_key": "x-amzn-sns-message-id",
+    "type": "thin"
+  }
+]
