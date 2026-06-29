@@ -11,7 +11,7 @@ down:
 
 .PHONY: run-bifrost
 run-bifrost:
-	go run cmd/bifrost-webhook-ingestor/main.go
+	go run cmd/bifrost/main.go
 
 .PHONY: bench
 bench:

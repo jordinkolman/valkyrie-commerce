@@ -1,4 +1,4 @@
-package main
+package handlers
 
 
 import (
@@ -10,6 +10,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/jordinkolman/valkyrie-commerce/internal/config"
 )
 
 // setupTestEnvironment initializes an in-memory Redis instance and binds the Bifrost server.
@@ -24,7 +26,7 @@ func setupTestEnvironment(t *testing.T) (*Server, *miniredis.Miniredis) {
 	})
 
 
-	return &Server{redisClient: client},  mr
+	return NewServer(client),  mr
 }
 
 func TestWebhookIngestion(t *testing.T) {
@@ -36,24 +38,24 @@ func TestWebhookIngestion(t *testing.T) {
 		}
 	}()
 
-	shopifyProvider := Provider{
+	shopifyProvider := config.Provider{
 		Name: "shopify",
 		IdempotencySource: "header",
 		IdempotencyKey: "X-Shopify-Webhook-Id",
-		Type: Fat,
+		Type: config.Fat,
 	}
 
-	stripeProvider := Provider{
+	stripeProvider := config.Provider{
 		Name: "stripe",
 		IdempotencySource: "payload",
 		IdempotencyKey: "id",
-		Type: Thin,
+		Type: config.Thin,
 	}
 
 	tests := []struct {
 
 		name               string
-		provider           Provider
+		provider           config.Provider
 		payload            []byte
 		headers            map[string]string
 		expectedStatus     int
@@ -121,7 +123,7 @@ func TestWebhookIngestion(t *testing.T) {
 			// Wipe the in-memory redis state between tests to prevent stream pollution
 			mr.FlushAll()
 
-			handler := srv.buildWebhookHandler(tt.provider)
+			handler := srv.BuildWebhookHandler(tt.provider)
 
 			// Execute Initial Request
 			req := httptest.NewRequest(http.MethodPost, "/webhook/"+tt.provider.Name, bytes.NewReader(tt.payload))
