@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -120,7 +121,11 @@ func main() {
 
   configPath := os.Getenv("PROVIDER_CONFIG_PATH")
   if configPath == "" {
-	  configPath = "config/providers.json"
+	  exePath, err := os.Executable()
+	  if err != nil {
+		  log.Fatalf("Fatal: Could not resolve executable path: %v", err)
+	  }
+	  configPath = filepath.Join(filepath.Dir(exePath), "config", "providers.json")
   }
 
   providers, err := loadProviders(configPath)
