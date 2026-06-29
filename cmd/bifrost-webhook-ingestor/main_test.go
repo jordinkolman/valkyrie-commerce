@@ -30,7 +30,11 @@ func setupTestEnvironment(t *testing.T) (*Server, *miniredis.Miniredis) {
 func TestWebhookIngestion(t *testing.T) {
 	srv, mr := setupTestEnvironment(t)
 	defer mr.Close()
-	defer srv.redisClient.Close()
+	defer func() {
+		if err := srv.redisClient.Close(); err != nil {
+			t.Errorf("failed to close redis client: %v", err)
+		}
+	}()
 
 	shopifyProvider := Provider{
 		Name: "shopify",
