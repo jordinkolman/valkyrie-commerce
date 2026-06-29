@@ -180,6 +180,9 @@ func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, stream
       log.Printf("Push to Redis stream failed: %v", err)
       http.Error(w, "Internal Server Error", http.StatusInternalServerError)
     }
+
+	log.Printf("Successfully ingested %d bytes (Keyless) from %s\n", len(payloadBytes), r.RemoteAddr)
+	w.WriteHeader(http.StatusOK)
     return
   }
 
