@@ -24,7 +24,7 @@ func setupTestEnvironment(t *testing.T) (*Server, *miniredis.Miniredis) {
 	})
 
 
-	return &Server{redisClient: client}, mr
+	return &Server{redisClient: client},  mr
 }
 
 func TestWebhookIngestion(t *testing.T) {
@@ -32,8 +32,19 @@ func TestWebhookIngestion(t *testing.T) {
 	defer mr.Close()
 	defer srv.redisClient.Close()
 
-	shopifyProvider := SupportedProviders[0] // Fat Webhook -> incoming_webhooks
-	stripeProvider := SupportedProviders[2]  // Thin Webhook -> thin_webhooks
+	shopifyProvider := Provider{
+		Name: "shopify",
+		IdempotencySource: "header",
+		IdempotencyKey: "X-Shopify-Webhook-Id",
+		Type: Fat,
+	}
+
+	stripeProvider := Provider{
+		Name: "stripe",
+		IdempotencySource: "payload",
+		IdempotencyKey: "id",
+		Type: Thin,
+	}
 
 	tests := []struct {
 
@@ -80,8 +91,8 @@ func TestWebhookIngestion(t *testing.T) {
 		{
 			name:               "Valid Thin Webhook Routing (Stripe)",
 			provider:           stripeProvider,
-			payload:            []byte(`{"event_type": "charge.succeeded"}`),
-			headers:            map[string]string{"Stripe-Signature": "sig-9999"},
+			payload:            []byte(`{"id": "evt_9999:, "event_type": "charge.succeeded"}`),
+			headers:            map[string]string{},
 			expectedStatus:     http.StatusOK,
 			expectedStreamName: "thin_webhooks",
 			expectedStreamLen:  1,
