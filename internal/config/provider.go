@@ -1,3 +1,4 @@
+// Package config handles the ingestion and validation of external configuration files.
 package config
 
 import (
@@ -6,8 +7,10 @@ import (
 	"os"
 )
 
+// WebhookType dictates which Redis stream the payload will be routed to.
 type WebhookType string
 
+// Provider defines the routing and idempotency extraction rules for a specific third-party webhook source.
 type Provider struct {
 	Name string `json:"name"`
 	IdempotencySource string `json:"idempotency_source"`
@@ -20,7 +23,8 @@ const (
 	Thin WebhookType = "thin"
 )
 
-
+// LoadProviders reads a JSON configuration file from disk, parses the provider definitions, 
+// and strictly validates them against supported parameters to prevent runtime routing panics.
 func LoadProviders(filepath string) ([]Provider, error) {
 	file, err := os.Open(filepath)
 	if err != nil {

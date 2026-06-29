@@ -1,3 +1,4 @@
+// Package handlers contains the HTTP routing logic, payload validation, and database ingestion mechanics.
 package handlers
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/jordinkolman/valkyrie-commerce/internal/config"
 )
 
+// Server holds the dependencies required by HTTP handlers, such as the active Redis connection pool.
 type Server struct {
 	redisClient *redis.Client
 }
@@ -41,13 +43,15 @@ var ingestScript = redis.NewScript(`
   return 1
 `)
 
+// NewServer acts as the constructor for the handler suite, safely injecting the necessary infrastructure dependencies.
 func NewServer(client *redis.Client) *Server {
 	return &Server{
 		redisClient: client,
 	}
 }
 
-
+// BuildWebhookHandler returns an http.HandlerFunc bound to a specific provider's ruleset.
+// It executes payload size validation, dynamic idempotency extraction, and atomic Redis stream insertion.
 func (srv *Server) BuildWebhookHandler(p config.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Received webhook", "webhook_type", p.Type, "provider", p.Name, "remote_addr", r.RemoteAddr)
@@ -60,7 +64,10 @@ func (srv *Server) BuildWebhookHandler(p config.Provider) http.HandlerFunc {
 	}
 }
 
-
+// ingestToStream handles the core ingestion pipeline for an incoming webhook.
+// It enforces memory safety via bounded body reading, extracts the idempotency key 
+// based on the provider's configuration (header or payload), and executes an atomic 
+// Redis Lua script to guarantee deduplication and stream insertion without race conditions.
 func (srv *Server) ingestToStream(w http.ResponseWriter, r *http.Request, streamName string, p config.Provider) {
 	// Enforce max payload size to protect memory
 	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadSize)
