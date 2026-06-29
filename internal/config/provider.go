@@ -13,6 +13,7 @@ type WebhookType string
 // Provider defines the routing and idempotency extraction rules for a specific third-party webhook source.
 type Provider struct {
 	Name string `json:"name"`
+	SignatureHeader string `json:"signature_header"`
 	IdempotencySource string `json:"idempotency_source"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Type WebhookType `json:"type"`

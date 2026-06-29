@@ -4,6 +4,10 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -114,6 +118,16 @@ func TestWebhookIngestion(t *testing.T) {
 
 			expectedStreamLen:  0,
 		},
+		{
+			name:               "Unauthorized (Invalid Signature Drop)",
+			provider:           shopifyProvider,
+			payload:            []byte(`{"order_id": 9999, "total": 0.00}`),
+			headers:            map[string]string{"X-Shopify-Webhook-Id": "uuid-unauth"},
+			// We expect a 401 and an empty stream
+			expectedStatus:     http.StatusUnauthorized,
+			expectedStreamName: "incoming_webhooks",
+			expectedStreamLen:  0,
+		},
 	}
 
 
@@ -124,6 +138,21 @@ func TestWebhookIngestion(t *testing.T) {
 			mr.FlushAll()
 
 			handler := srv.BuildWebhookHandler(tt.provider)
+
+			if tt.expectedStatus != http.StatusUnauthorized {
+				secret := "dummy_secret_for_local_testing"
+
+				if tt.provider.Name == "shopify" || tt.provider.Name == "woocommerce" {
+					mac := hmac.New(sha256.New, []byte(secret))
+					mac.Write(tt.payload)
+					tt.headers[tt.provider.SignatureHeader] = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+				} else if tt.provider.Name == "stripe" {
+					timestamp := "1620000000"
+					mac := hmac.New(sha256.New, []byte(secret))
+					mac.Write([]byte(timestamp + "." + string(tt.payload)))
+					tt.headers[tt.provider.SignatureHeader] = "t=" + timestamp + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+				}
+			}
 
 			// Execute Initial Request
 			req := httptest.NewRequest(http.MethodPost, "/webhook/"+tt.provider.Name, bytes.NewReader(tt.payload))
