@@ -67,10 +67,36 @@ func loadProviders(filepath string) ([]Provider, error) {
 	}
 	defer file.Close()
 
+	dec := json.NewDecoder(file)
+	dec.DisallowUnknownFields()
+
 	var providers []Provider
-	if err = json.NewDecoder(file).Decode(&providers); err != nil {
+	if err = dec.Decode(&providers); err != nil {
 		return nil, fmt.Errorf("failed to decode provider config: %w", err)
 	}
+
+	seen := make(map[string]struct{}, len(providers))
+
+	for i, p := range providers {
+		if p.Name == "" || p.IdempotencyKey == "" {
+			return nil, fmt.Errorf("provider[%d]: missing required fields", i)
+		}
+		switch p.IdempotencySource {
+		case "header", "payload":
+		default:
+			return nil, fmt.Errorf("provider[%d]: unsupported idempotency_source %q", i, p.IdempotencySource)
+		}
+		switch p.Type {
+		case Fat, Thin:
+		default:
+			return nil, fmt.Errorf("provider[%d]: unsupported type %q", i, p.Type)
+		}
+		if _, dup := seen[p.Name]; dup {
+			return nil, fmt.Errorf("duplicate provider name %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
+	}
+
 	return providers, nil
 }
 
